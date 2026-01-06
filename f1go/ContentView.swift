@@ -8,15 +8,18 @@
 import SwiftUI
 import AudioToolbox
 import UIKit
+import AVFoundation
 
 struct ContentView: View {
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
+    private let gridCount = 9
     private let timer = Timer.publish(every: 0.12, on: .main, in: .common).autoconnect()
 
     @State private var isPlaying = false
     @State private var activeIndex: Int? = nil
     @State private var score = 0
     @AppStorage("bestScore") private var bestScore = 0
+    @AppStorage("bgmEnabled") private var bgmEnabled = true
     @State private var timeRemaining: Double = 30
     @State private var lastTick: Date = .now
     @State private var lastSpawn: Date = .now
@@ -25,7 +28,8 @@ struct ContentView: View {
     @State private var message = "タップしてスタート"
     @State private var backgroundSpin = false
     @State private var hitFlash = false
-    private let sound = SoundEngine()
+    @State private var obstacleIndices: Set<Int> = []
+    @State private var sound = SoundEngine()
 
     var body: some View {
         ZStack {
@@ -43,6 +47,13 @@ struct ContentView: View {
             pillBadge(text: "F1 GO", symbol: "flame.fill")
                 .padding(.top, 10)
                 .padding(.trailing, 16)
+        }
+        .onChange(of: bgmEnabled) { enabled in
+            if enabled && isPlaying {
+                sound.startBGM()
+            } else {
+                sound.stopBGM()
+            }
         }
         .onReceive(timer) { date in
             guard isPlaying else { lastTick = date; return }
@@ -105,8 +116,10 @@ struct ContentView: View {
 
     private var grid: some View {
         LazyVGrid(columns: columns, spacing: 12) {
-            ForEach(0..<9, id: \.self) { index in
-                TargetCell(isActive: index == activeIndex, hitFlash: hitFlash) {
+            ForEach(0..<gridCount, id: \.self) { index in
+                TargetCell(isActive: index == activeIndex,
+                           isObstacle: obstacleIndices.contains(index),
+                           hitFlash: hitFlash) {
                     handleTap(index)
                 }
                 .aspectRatio(1, contentMode: .fit)
@@ -126,6 +139,13 @@ struct ContentView: View {
                 }
                 .tint(.mint)
             }
+
+            Toggle(isOn: $bgmEnabled) {
+                Label("BGM", systemImage: bgmEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .toggleStyle(SwitchToggleStyle(tint: .mint))
 
             Button(action: toggleGame) {
                 Text(isPlaying ? "一時停止" : (timeRemaining <= 0 ? "もう一度" : "スタート"))
@@ -163,6 +183,7 @@ struct ContentView: View {
         if isPlaying {
             isPlaying = false
             message = "一時停止中"
+            sound.stopBGM()
         } else {
             startGame()
         }
@@ -174,29 +195,47 @@ struct ContentView: View {
         timeRemaining = 30
         lastTick = .now
         lastSpawn = .now
+        obstacleIndices.removeAll()
         spawnNewTarget()
         isPlaying = true
         message = "GO! 光るところを叩いて！"
         sound.playStart()
+        if bgmEnabled { sound.startBGM() }
     }
 
     private func endGame() {
         isPlaying = false
         activeIndex = nil
+        obstacleIndices.removeAll()
         let newBest = score > bestScore
         bestScore = max(bestScore, score)
         message = "終了！ベスト: \(bestScore)点"
         sound.playEnd(bestUpdated: newBest)
+        sound.stopBGM()
     }
 
     private func spawnNewTarget() {
-        let next = (0..<9).filter { $0 != activeIndex }.randomElement() ?? Int.random(in: 0..<9)
+        let all = Array(0..<gridCount)
+        let next = all.filter { $0 != activeIndex }.randomElement() ?? Int.random(in: 0..<gridCount)
         activeIndex = next
+
+        let obstacleCount = min(3, max(1, 1 + streak / 4))
+        let candidates = all.filter { $0 != next }
+        obstacleIndices = Set(candidates.shuffled().prefix(obstacleCount))
     }
 
     private func handleTap(_ index: Int) {
         guard isPlaying else {
             message = "スタートを押してね"
+            return
+        }
+
+        if obstacleIndices.contains(index) {
+            score = max(0, score - 2)
+            streak = 0
+            timeRemaining = max(0, timeRemaining - 1)
+            message = "障害物！ -2"
+            sound.playMiss()
             return
         }
 
@@ -252,6 +291,7 @@ struct ContentView: View {
 
 private struct TargetCell: View {
     let isActive: Bool
+    let isObstacle: Bool
     let hitFlash: Bool
     let action: () -> Void
 
@@ -262,15 +302,15 @@ private struct TargetCell: View {
                     .fill(.white.opacity(0.06))
 
                 Circle()
-                    .fill(isActive ? Color.mint.opacity(0.95) : Color.clear)
-                    .blur(radius: isActive ? 14 : 0)
-                    .scaleEffect(isActive ? 1.05 : 1)
+                    .fill(isActive ? Color.mint.opacity(0.95) : (isObstacle ? Color.red.opacity(0.7) : Color.clear))
+                    .blur(radius: isActive ? 14 : (isObstacle ? 8 : 0))
+                    .scaleEffect(isActive ? 1.05 : (isObstacle ? 1.02 : 1))
 
                 Circle()
-                    .strokeBorder(isActive ? Color.mint : Color.white.opacity(0.25), lineWidth: 3)
+                    .strokeBorder(isActive ? Color.mint : (isObstacle ? Color.red.opacity(0.8) : Color.white.opacity(0.25)), lineWidth: 3)
 
-                Image(systemName: isActive ? "bolt.fill" : "hand.tap")
-                    .foregroundStyle(isActive ? .black : .white.opacity(0.6))
+                Image(systemName: isActive ? "bolt.fill" : (isObstacle ? "xmark.octagon.fill" : "hand.tap"))
+                    .foregroundStyle(isActive ? .black : (isObstacle ? .white : .white.opacity(0.6)))
                     .font(.title2.bold())
 
                 if isActive {
@@ -292,6 +332,13 @@ private final class SoundEngine {
     private let hitImpact = UIImpactFeedbackGenerator(style: .heavy)
     private let missImpact = UIImpactFeedbackGenerator(style: .light)
     private let notif = UINotificationFeedbackGenerator()
+    private var bgmPlayer: AVAudioPlayer?
+    private let bgmName = "bgm"
+    private let bgmExtension = "mp3"
+
+    init() {
+        prepareBGM()
+    }
 
     func playHit(streak: Int) {
         hitImpact.impactOccurred(intensity: min(1, 0.45 + CGFloat(streak) * 0.08))
@@ -313,8 +360,35 @@ private final class SoundEngine {
         play(id: bestUpdated ? 1022 : 1007) // softer finish / alert
     }
 
+    func startBGM() {
+        if bgmPlayer == nil {
+            prepareBGM()
+        }
+        bgmPlayer?.play()
+    }
+
+    func stopBGM() {
+        bgmPlayer?.stop()
+        bgmPlayer?.currentTime = 0
+    }
+
     private func play(id: SystemSoundID) {
         AudioServicesPlaySystemSound(id)
+    }
+
+    private func prepareBGM() {
+        guard let url = Bundle.main.url(forResource: bgmName, withExtension: bgmExtension) else { return }
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.ambient, options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.numberOfLoops = -1
+            player.volume = 0.5
+            player.prepareToPlay()
+            bgmPlayer = player
+        } catch {
+            bgmPlayer = nil
+        }
     }
 }
 

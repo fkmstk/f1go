@@ -6,6 +6,8 @@
 //
 
 import SwiftUI
+import AudioToolbox
+import UIKit
 
 struct ContentView: View {
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
@@ -23,6 +25,7 @@ struct ContentView: View {
     @State private var message = "タップしてスタート"
     @State private var backgroundSpin = false
     @State private var hitFlash = false
+    private let sound = SoundEngine()
 
     var body: some View {
         ZStack {
@@ -174,13 +177,16 @@ struct ContentView: View {
         spawnNewTarget()
         isPlaying = true
         message = "GO! 光るところを叩いて！"
+        sound.playStart()
     }
 
     private func endGame() {
         isPlaying = false
         activeIndex = nil
+        let newBest = score > bestScore
         bestScore = max(bestScore, score)
         message = "終了！ベスト: \(bestScore)点"
+        sound.playEnd(bestUpdated: newBest)
     }
 
     private func spawnNewTarget() {
@@ -199,12 +205,14 @@ struct ContentView: View {
             streak += 1
             message = ["ナイス！","速い！","いい反応！"].randomElement() ?? "Good!"
             hitFlash.toggle()
+            sound.playHit(streak: streak)
             spawnNewTarget()
             lastSpawn = .now
         } else {
             score = max(0, score - 1)
             streak = 0
             message = "外した！ -1"
+            sound.playMiss()
         }
     }
 
@@ -277,6 +285,36 @@ private struct TargetCell: View {
         .buttonStyle(.plain)
         .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isActive)
         .shadow(color: .mint.opacity(isActive ? 0.8 : 0), radius: 16, x: 0, y: 10)
+    }
+}
+
+private final class SoundEngine {
+    private let hitImpact = UIImpactFeedbackGenerator(style: .heavy)
+    private let missImpact = UIImpactFeedbackGenerator(style: .light)
+    private let notif = UINotificationFeedbackGenerator()
+
+    func playHit(streak: Int) {
+        hitImpact.impactOccurred(intensity: min(1, 0.45 + CGFloat(streak) * 0.08))
+        play(id: 1057) // short “tock”
+    }
+
+    func playMiss() {
+        missImpact.impactOccurred(intensity: 0.35)
+        play(id: 1106) // muted “thud”
+    }
+
+    func playStart() {
+        notif.notificationOccurred(.success)
+        play(id: 1113) // upbeat click
+    }
+
+    func playEnd(bestUpdated: Bool) {
+        notif.notificationOccurred(bestUpdated ? .success : .warning)
+        play(id: bestUpdated ? 1022 : 1007) // softer finish / alert
+    }
+
+    private func play(id: SystemSoundID) {
+        AudioServicesPlaySystemSound(id)
     }
 }
 
